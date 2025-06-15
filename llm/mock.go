@@ -1,19 +1,18 @@
 package llm
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"strings"
+)
 
 type mockOpenAI struct {
-	responses []string
-	index    int
+	firstInteraction bool
 }
 
 func NewMockOpenAI() Client {
 	return &mockOpenAI{
-		responses: []string{
-			"Hello! I'm a mock AI assistant.",
-			"Let me help you list the directory contents.",
-		},
-		index: 0,
+		firstInteraction: true,
 	}
 }
 
@@ -23,18 +22,42 @@ func (m *mockOpenAI) Stream(ctx context.Context, hist []Message) <-chan Chunk {
 	go func() {
 		defer close(out)
 
-		// Get the next response
-		response := m.responses[m.index]
-		m.index = (m.index + 1) % len(m.responses)
+		// Get the last message from history
+		var lastMsg string
+		if len(hist) > 0 {
+			lastMsg = strings.ToLower(strings.TrimSpace(hist[len(hist)-1].Content))
+			out <- Chunk{Text: fmt.Sprintf("[DEBUG] Processing: %q\n", lastMsg)}
+		}
 
-		// If it's the second response, send a tool call
-		if m.index == 0 {
-			out <- Chunk{Text: response}
-		} else {
-			out <- Chunk{ToolCall: &ToolCall{
+		// First interaction: show available commands
+		if m.firstInteraction {
+			m.firstInteraction = false
+			out <- Chunk{Text: `Available commands:
+- hello or greet: Get a friendly greeting
+- cmd or command: List directory contents with ls -alh`}
+			out <- Chunk{Done: true}
+			return
+		}
+
+		// Handle commands
+		switch lastMsg {
+		case "hello", "greet":
+			out <- Chunk{Text: "Hello!\n"}
+		case "cmd", "command":
+			out <- Chunk{Text: "[DEBUG] Command matched: cmd/command\n"}
+			
+			// Create and send the tool call
+			toolCall := &ToolCall{
 				Command: "ls -alh",
 				Reason:  "Listing directory contents",
-			}}
+			}
+			out <- Chunk{Text: fmt.Sprintf("[DEBUG] Tool call: %s (%s)\n", toolCall.Command, toolCall.Reason)}
+			
+			// Send the tool call in a separate chunk
+			toolCallChunk := Chunk{ToolCall: toolCall}
+			out <- toolCallChunk
+		default:
+			out <- Chunk{Text: fmt.Sprintf("I don't understand that command: %q. Try 'hello' or 'cmd'.\n", lastMsg)}
 		}
 
 		out <- Chunk{Done: true}
