@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/rmhubbert/bubbletea-overlay"
 )
 
 // streamCmd represents a command that streams chunks from a channel
@@ -95,6 +96,7 @@ type Model struct {
 	aiContent  string
 	bashOutput string
 	chunkChan  chan llm.Chunk
+	overlay    *overlay.Model
 }
 
 // appendToOutput adds text to the current output and updates the viewport
@@ -131,10 +133,11 @@ func NewModel(c llm.Client) Model {
 	vp := viewport.New(78, 15)
 	vp.Style = lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#874BFD")).
+		BorderForeground(lipgloss.Color("#87ceeb")).
 		Padding(0, 1)
 
-	return Model{
+	// Create base model
+	m := Model{
 		client:     c,
 		input:      in,
 		output:     vp,
@@ -147,6 +150,11 @@ func NewModel(c llm.Client) Model {
 		keys:       defaultKeymap(),
 		chunkChan:  make(chan llm.Chunk),
 	}
+
+	// Initialize overlay with empty dialog
+	m.overlay = overlay.New(nil, &m, overlay.Center, overlay.Center, 0, 0)
+
+	return m
 }
 
 // Init initializes the model
@@ -254,47 +262,98 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.output, cmd = m.output.Update(msg)
 	cmds = append(cmds, cmd)
 
+	// Update the overlay
+	if m.overlay != nil {
+		m.overlay.Update(msg)
+	}
+
 	return m, tea.Batch(cmds...)
+}
+
+// BaseModel represents the main application view
+type BaseModel struct {
+	content string
+	width   int
+	height  int
+}
+
+func (m BaseModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m BaseModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	return m, nil
+}
+
+func (m BaseModel) View() string {
+	return lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		Render(m.content)
+}
+
+// DialogModel represents the dialog view
+type DialogModel struct {
+	content string
+	width   int
+	height  int
+}
+
+func (m DialogModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m DialogModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	return m, nil
+}
+
+func (m DialogModel) View() string {
+	return lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#874BFD")).
+		Padding(1, 2).
+		Width(m.width).
+		Height(m.height).
+		Render(m.content)
 }
 
 // View renders the UI
 func (m Model) View() string {
-	if m.showDialog && m.dialog != nil {
-		// Create a centered dialog box
-		dialog := lipgloss.NewStyle().
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#874BFD")).
-			Padding(1, 2).
-			Width(m.width - 4).  // Leave some margin
-			Height(m.height - 4). // Leave some margin
-			Render(m.dialog.View())
-
-		// Center the dialog in the terminal
-		return lipgloss.Place(
-			m.width,
-			m.height,
-			lipgloss.Center,
-			lipgloss.Center,
-			dialog,
-		)
-	}
-
-	// Style the input area
-	inputStyle := lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#87ceeb")).
-		Padding(0, 1).
-		Width(m.width - 2)  // Match output width
-
 	// Add mode indicator
 	modeStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#87ceeb")).
 		Padding(0, 1)
 
-	// Combine input and output with proper styling
-	return fmt.Sprintf("%s\n%s\n%s",
+	// Base view with input and output
+	baseView := fmt.Sprintf("%s\n%s\n%s",
 		modeStyle.Render(fmt.Sprintf("[%s]", m.mode)),
 		m.output.View(),
-		inputStyle.Render(m.input.View()),
+		m.input.View(),
 	)
+
+	if m.showDialog && m.dialog != nil {
+		// Create dialog content
+		dialogContent := fmt.Sprintf("Command: %s\n\nReason: %s",
+			m.dialog.Command,
+			m.dialog.Reason,
+		)
+
+		// Create models for overlay
+		baseModel := BaseModel{
+			content: baseView,
+			width:   m.width,
+			height:  m.height,
+		}
+		dialogModel := DialogModel{
+			content: dialogContent,
+			width:   m.width / 2,    // Half the terminal width
+			height:  m.height / 3,   // One third of the terminal height
+		}
+
+		// Create a new overlay with the dialog
+		m.overlay = overlay.New(&dialogModel, &baseModel, overlay.Center, overlay.Center, 0, 0)
+		return m.overlay.View()
+	}
+
+	return baseView
 }
