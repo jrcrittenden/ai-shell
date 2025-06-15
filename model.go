@@ -4,321 +4,194 @@ package main
 import (
 	"context"
 	"fmt"
-	//"os"
-	"os/exec"
-	"strings"
-	//"sync"
-	"time"
+	//"time"
 
+	"github.com/jrcrittenden/ai-shell/internal/tui"
 	"github.com/jrcrittenden/ai-shell/llm"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	//"github.com/charmbracelet/bubbles/viewport"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-/* --------------------------------------------------------------------- */
-/*  Modes & custom messages                                              */
-/* --------------------------------------------------------------------- */
-
-type Mode int
-
-const (
-	ModeAI Mode = iota
-	ModeBash
-)
-
-func (m Mode) String() string {
-	if m == ModeAI {
-		return "AI"
-	}
-	return "Bash"
-}
-
-type (
-	AIResponseMsg struct {
-		PlainText string
-		ToolCall  *llm.ToolCall
-	}
-	ExecOutputMsg string
-	ErrMsg        struct{ Err error }
-)
-
-/* --------------------------------------------------------------------- */
-/*  Keymap                                                               */
-/* --------------------------------------------------------------------- */
-
-type keymap struct {
-	Toggle key.Binding
-	Run    key.Binding
-	Quit   key.Binding
-}
-
-func defaultKeymap() keymap {
-	return keymap{
-		Toggle: key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "switch AI↔bash")),
-		Run:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send/exec")),
-		Quit:   key.NewBinding(key.WithKeys("ctrl+c", "q"), key.WithHelp("q", "quit")),
-	}
-}
-
-/* --------------------------------------------------------------------- */
-/*  Model                                                                */
-/* --------------------------------------------------------------------- */
-
+// Model represents the application state
 type Model struct {
-	mode    Mode
-	client  llm.Client
-	aiView  viewport.Model
-	bashView viewport.Model
-	localView viewport.Model
-	aiContent string
-	bashContent string
-	localContent string
-	input   textinput.Model
-	keys    keymap
-	program *tea.Program
+	client     llm.Client
+	input      textinput.Model
+	output     textarea.Model
+	history    []llm.Message
+	showDialog bool
+	dialog     *tui.DialogModel
+	width      int
+	height     int
 }
 
-func NewModel(c llm.Client) *Model {
+// NewModel creates a new model
+func NewModel(c llm.Client) Model {
+	// Create input
 	in := textinput.New()
+	in.Placeholder = "Type a message..."
 	in.Focus()
-	in.Placeholder = ""
 	in.Prompt = "> "
-	in.CharLimit = 2048
+	in.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#87ceeb"))
+	in.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff"))
 
-	// Create separate viewports for each mode
-	aiVp := viewport.New(80, 24)
-	aiVp.Style = lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#874BFD"))
+	// Create output area
+	out := textarea.New()
+	out.Placeholder = "AI output will appear here..."
+	out.ShowLineNumbers = false
+	out.SetWidth(78)  // Slightly smaller width
+	out.SetHeight(18) // Slightly smaller height
+	out.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	out.ShowLineNumbers = false
+	out.Prompt = ""
+	out.Placeholder = "AI output will appear here..."
+	out.FocusedStyle.Prompt = lipgloss.NewStyle()
+	out.BlurredStyle.Prompt = lipgloss.NewStyle()
+	out.Blur() // Make it non-focusable
 
-	bashVp := viewport.New(80, 24)
-	bashVp.Style = lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#87ceeb"))
-
-	localVp := viewport.New(80, 24)
-	localVp.Style = lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#98fb98"))
-
-	return &Model{
-		mode:    ModeAI,
-		client:  c,
-		aiView:  aiVp,
-		bashView: bashVp,
-		localView: localVp,
-		aiContent: "",
-		bashContent: "",
-		localContent: "",
-		input:   in,
-		keys:    defaultKeymap(),
+	return Model{
+		client:     c,
+		input:      in,
+		output:     out,
+		history:    []llm.Message{},
+		showDialog: false,
+		dialog:     nil,
+		width:      80,
+		height:     20,
 	}
 }
 
-func (m *Model) Init() tea.Cmd {
-	// Initialize all viewports
-	cmds := []tea.Cmd{
-		textinput.Blink,
-		m.aiView.Init(),
-		m.bashView.Init(),
-		m.localView.Init(),
-	}
-	return tea.Batch(cmds...)
+// Init initializes the model
+func (m Model) Init() tea.Cmd {
+	return textinput.Blink
 }
 
-/* --------------------------------------------------------------------- */
-/*  Update                                                               */
-/* --------------------------------------------------------------------- */
-
-func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+// Update handles messages and updates the model accordingly
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		// Set viewport size, leaving room for input and mode badge
-		m.aiView.Width = msg.Width
-		m.aiView.Height = msg.Height - 4 // Leave room for input, placeholder, mode badge, and border
-		m.bashView.Width = msg.Width
-		m.bashView.Height = msg.Height - 4 // Leave room for input, placeholder, mode badge, and border
-		m.localView.Width = msg.Width
-		m.localView.Height = msg.Height - 4 // Leave room for input, placeholder, mode badge, and border
-
-		// Update all viewports
-		var cmd tea.Cmd
-		m.aiView, cmd = m.aiView.Update(msg)
-		cmds = append(cmds, cmd)
-		m.bashView, cmd = m.bashView.Update(msg)
-		cmds = append(cmds, cmd)
-		m.localView, cmd = m.localView.Update(msg)
-		cmds = append(cmds, cmd)
+		// Update dimensions
+		m.width = msg.Width
+		m.height = msg.Height - 2 // Leave room for input
+		m.output.SetWidth(m.width - 2)  // Leave margin on right
+		m.output.SetHeight(m.height - 2) // Leave margin on top
 
 	case tea.KeyMsg:
-		switch {
-		case key.Matches(msg, m.keys.Quit):
+		switch msg.String() {
+		case "ctrl+c", "q":
 			return m, tea.Quit
-
-		case key.Matches(msg, m.keys.Toggle):
-			m.mode = (m.mode + 1) % 2
-			return m, nil
-
-		case key.Matches(msg, m.keys.Run):
-			line := strings.TrimSpace(m.input.Value())
-			if line == "" {
+		case "enter":
+			// Get the current input value
+			input := m.input.Value()
+			if input == "" {
 				return m, nil
 			}
-			
-			// Store the command before clearing input
-			cmdStr := line
+
+			// Add user message to history
+			m.history = append(m.history, llm.Message{
+				Role:    "user",
+				Content: input,
+			})
+
+			// Clear the input
 			m.input.Reset()
-			
-			if m.mode == ModeBash {
-				// Show the command being executed
-				m.appendHistory(cmdStr)
-				return m, func() tea.Msg {
-					cmd := exec.Command("bash", "-c", cmdStr)
-					out, err := cmd.CombinedOutput()
-					if err != nil {
-						return ErrMsg{Err: err}
+
+			// Start streaming response
+			chunks := m.client.Stream(context.Background(), m.history)
+			go func() {
+				for chunk := range chunks {
+					if chunk.Text != "" {
+						m.output.InsertString(chunk.Text)
 					}
-					return ExecOutputMsg(out)
+					if chunk.ToolCall != nil {
+						// Create and show dialog
+						m.dialog = tui.NewDialog(chunk.ToolCall.Command, chunk.ToolCall.Reason)
+						m.showDialog = true
+					}
 				}
-			}
-			return m, askAI(m.client, line)
+			}()
 		}
 
-		// let textinput consume everything else
+		// Update the input
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		cmds = append(cmds, cmd)
 
-	case ExecOutputMsg:
-		output := string(msg)
-		if output != "" {
-			m.appendHistory(output)
+	case llm.Chunk:
+		// Handle text content
+		if msg.Text != "" {
+			m.output.InsertString(msg.Text)
 		}
 
-	case ErrMsg:
-		red := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5555"))
-		m.appendHistory(red.Render("error: " + msg.Err.Error()))
-
-	case AIResponseMsg:
+		// Check for tool call
 		if msg.ToolCall != nil {
-			m.appendHistory(fmt.Sprintf("AI ➜ `%s`  — %s",
-				msg.ToolCall.Command, msg.ToolCall.Reason))
+			// Create and show dialog
+			m.dialog = tui.NewDialog(msg.ToolCall.Command, msg.ToolCall.Reason)
+			m.showDialog = true
 		}
-		if msg.PlainText != "" {
-			m.appendHistory(msg.PlainText)
+
+		// Add the AI response to history
+		if msg.Text != "" {
+			m.history = append(m.history, llm.Message{
+				Role:    "assistant",
+				Content: msg.Text,
+			})
 		}
-		return m, nil
 	}
 
-	// Update all viewports with the message
-	var cmd tea.Cmd
-	m.aiView, cmd = m.aiView.Update(msg)
-	cmds = append(cmds, cmd)
-	m.bashView, cmd = m.bashView.Update(msg)
-	cmds = append(cmds, cmd)
-	m.localView, cmd = m.localView.Update(msg)
-	cmds = append(cmds, cmd)
+	// Update the output area (but don't process key events)
+	if _, ok := msg.(tea.KeyMsg); !ok {
+		var cmd tea.Cmd
+		m.output, cmd = m.output.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 
 	return m, tea.Batch(cmds...)
 }
 
-/* --------------------------------------------------------------------- */
-/*  View                                                                 */
-/* --------------------------------------------------------------------- */
+// View renders the UI
+func (m Model) View() string {
+	if m.showDialog && m.dialog != nil {
+		// Create a centered dialog box
+		dialog := lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#874BFD")).
+			Padding(1, 2).
+			Width(m.width - 4).  // Leave some margin
+			Height(m.height - 4). // Leave some margin
+			Render(m.dialog.View())
 
-func (m *Model) View() string {
-	// Get the appropriate viewport based on mode
-	var vp viewport.Model
-	switch m.mode {
-	case ModeAI:
-		vp = m.aiView
-	case ModeBash:
-		vp = m.bashView
-	default:
-		vp = m.localView
+		// Center the dialog in the terminal
+		return lipgloss.Place(
+			m.width,
+			m.height,
+			lipgloss.Center,
+			lipgloss.Center,
+			dialog,
+		)
 	}
 
-	// Create the mode badge with right alignment
-	modeBadge := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#87ceeb")).
-		Align(lipgloss.Right).
-		Width(vp.Width).
-		Render("[" + m.mode.String() + "]")
+	// Style the output area
+	outputStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#874BFD")).
+		Padding(0, 1).  // Reduced padding
+		Width(m.width - 2).  // Leave margin on right
+		Height(m.height - 2) // Leave margin on top
 
-	// Create a placeholder line
-	placeholder := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#666666")).
-		Render("[placeholder]")
+	// Style the input area
+	inputStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#87ceeb")).
+		Padding(0, 1).
+		Width(m.width - 2)  // Match output width
 
-	// Combine everything with proper spacing
-	return fmt.Sprintf("%s\n%s\n%s\n%s",
-		modeBadge,
-		vp.View(),
-		m.input.View(),
-		placeholder,
+	// Combine input and output with proper styling
+	return fmt.Sprintf("%s\n%s",
+		outputStyle.Render(m.output.View()),
+		inputStyle.Render(m.input.View()),
 	)
-}
-
-/* --------------------------------------------------------------------- */
-/*  Helpers                                                              */
-/* --------------------------------------------------------------------- */
-
-func (m *Model) appendHistory(s string) {
-	// Get the appropriate viewport and content based on mode
-	var vp *viewport.Model
-	var content *string
-	switch m.mode {
-	case ModeAI:
-		vp = &m.aiView
-		content = &m.aiContent
-	case ModeBash:
-		vp = &m.bashView
-		content = &m.bashContent
-	default:
-		vp = &m.localView
-		content = &m.localContent
-	}
-
-	// Add new content
-	if *content != "" {
-		*content += "\n"
-	}
-	*content += s
-	
-	// Update viewport
-	vp.SetContent(*content)
-	vp.GotoBottom()
-}
-
-/* --------------------------------------------------------------------- */
-/*  Cmd wrappers                                                         */
-/* --------------------------------------------------------------------- */
-
-func askAI(c llm.Client, userPrompt string) tea.Cmd {
-	hist := []llm.Message{{Role: "user", Content: userPrompt}}
-
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		defer cancel()
-
-		for chunk := range c.Stream(ctx, hist) {
-			if chunk.Err != nil {
-				return ErrMsg{Err: chunk.Err}
-			}
-			if chunk.ToolCall != nil {
-				return AIResponseMsg{ToolCall: chunk.ToolCall}
-			}
-			if chunk.Text != "" {
-				return AIResponseMsg{PlainText: chunk.Text}
-			}
-		}
-		return nil
-	}
 }
