@@ -97,6 +97,8 @@ type Model struct {
 	bashOutput string
 	chunkChan  chan llm.Chunk
 	overlay    *overlay.Model
+	baseModel  BaseModel
+	dialogModel DialogModel
 }
 
 // appendToOutput adds text to the current output and updates the viewport
@@ -167,34 +169,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		// Update dimensions
-		m.width = msg.Width
-		m.height = msg.Height - 2 // Leave room for input
-		m.output.Width = m.width - 2  // Leave margin on right
-		m.output.Height = m.height - 4 // Leave more margin on top
-
 	case tea.KeyMsg:
+		if m.showDialog {
+			// Handle dialog-specific keys
+			switch msg.String() {
+			case "left", "right", "enter":
+				if m.overlay != nil {
+					// Get the current dialog model
+					dialogModel := m.dialogModel
+					updatedDialog, cmd := dialogModel.Update(msg)
+					m.dialogModel = updatedDialog.(DialogModel)
+					cmds = append(cmds, cmd)
+					
+					// Recreate overlay with updated dialog
+					m.overlay = overlay.New(&m.dialogModel, &m.baseModel, overlay.Center, overlay.Center, 0, 0)
+				}
+				return m, tea.Batch(cmds...)
+			}
+		}
+
+		// Handle other keys only if not in dialog
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
-		case "ctrl+t":
-			// Toggle mode
-			if m.mode == ModeAI {
-				m.mode = ModeBash
-				m.input.Placeholder = "Enter bash command..."
-			} else {
-				m.mode = ModeAI
-				m.input.Placeholder = "Type a message..."
-			}
 		case "enter":
-			// Get the current input value
-			input := m.input.Value()
-			if input == "" {
-				return m, nil
-			}
-
 			if m.mode == ModeAI {
+				// Get the current input value
+				input := m.input.Value()
+				if input == "" {
+					return m, nil
+				}
+
 				// Add user message to history
 				m.history = append(m.history, llm.Message{
 					Role:    "user",
@@ -223,14 +228,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				// Bash mode - execute command
 				// TODO: Implement command execution
-				m.appendToOutput("$ " + input)
+				m.appendToOutput("$ " + m.input.Value())
+			}
+		case "esc":
+			if m.mode == ModeBash {
+				m.mode = ModeAI
+				m.input.SetValue("")
 			}
 		}
 
-		// Update the input
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		cmds = append(cmds, cmd)
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.output.Width = msg.Width
+		m.output.Height = msg.Height - 2 // Leave room for input
+		m.input.Width = msg.Width
 
 	case llm.Chunk:
 		// Handle text content
@@ -257,15 +269,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, streamChunks(m.chunkChan))
 	}
 
-	// Update the viewport
-	var cmd tea.Cmd
-	m.output, cmd = m.output.Update(msg)
-	cmds = append(cmds, cmd)
-
-	// Update the overlay
-	if m.overlay != nil {
-		m.overlay.Update(msg)
-	}
+	// Update input
+	var inputCmd tea.Cmd
+	m.input, inputCmd = m.input.Update(msg)
+	cmds = append(cmds, inputCmd)
 
 	return m, tea.Batch(cmds...)
 }
@@ -294,9 +301,10 @@ func (m BaseModel) View() string {
 
 // DialogModel represents the dialog view
 type DialogModel struct {
-	content string
-	width   int
-	height  int
+	content    string
+	width      int
+	height     int
+	selected   int // 0: none, 1: approve, 2: deny
 }
 
 func (m DialogModel) Init() tea.Cmd {
@@ -304,17 +312,72 @@ func (m DialogModel) Init() tea.Cmd {
 }
 
 func (m DialogModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "left":
+			if m.selected > 1 {
+				m.selected--
+			}
+		case "right":
+			if m.selected < 2 {
+				m.selected++
+			}
+		case "enter":
+			if m.selected > 0 {
+				// TODO: Handle button press
+			}
+		}
+	}
 	return m, nil
 }
 
 func (m DialogModel) View() string {
+	// Style for buttons
+	buttonStyle := lipgloss.NewStyle().
+		Padding(0, 1).
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#87ceeb"))
+
+	// Style for selected button
+	selectedStyle := buttonStyle.Copy().
+		BorderForeground(lipgloss.Color("#874BFD")).
+		Foreground(lipgloss.Color("#874BFD"))
+
+	// Create buttons
+	approveBtn := "✓ Approve"
+	denyBtn := "✗ Deny"
+
+	// Apply selection styling
+	if m.selected == 1 {
+		approveBtn = selectedStyle.Render(approveBtn)
+	} else {
+		approveBtn = buttonStyle.Render(approveBtn)
+	}
+	if m.selected == 2 {
+		denyBtn = selectedStyle.Render(denyBtn)
+	} else {
+		denyBtn = buttonStyle.Render(denyBtn)
+	}
+
+	// Create button row
+	buttonRow := lipgloss.JoinHorizontal(
+		lipgloss.Center,
+		approveBtn,
+		lipgloss.NewStyle().Padding(0, 2).Render(""),
+		denyBtn,
+	)
+
+	// Combine content and buttons
+	content := fmt.Sprintf("%s\n\n%s", m.content, buttonRow)
+
 	return lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("#874BFD")).
 		Padding(1, 2).
 		Width(m.width).
 		Height(m.height).
-		Render(m.content)
+		Render(content)
 }
 
 // View renders the UI
@@ -339,19 +402,20 @@ func (m Model) View() string {
 		)
 
 		// Create models for overlay
-		baseModel := BaseModel{
+		m.baseModel = BaseModel{
 			content: baseView,
 			width:   m.width,
 			height:  m.height,
 		}
-		dialogModel := DialogModel{
-			content: dialogContent,
-			width:   m.width / 2,    // Half the terminal width
-			height:  m.height / 3,   // One third of the terminal height
+		m.dialogModel = DialogModel{
+			content:  dialogContent,
+			width:    m.width / 2,    // Half the terminal width
+			height:   m.height / 3,   // One third of the terminal height
+			selected: 1,              // Start with approve selected
 		}
 
 		// Create a new overlay with the dialog
-		m.overlay = overlay.New(&dialogModel, &baseModel, overlay.Center, overlay.Center, 0, 0)
+		m.overlay = overlay.New(&m.dialogModel, &m.baseModel, overlay.Center, overlay.Center, 0, 0)
 		return m.overlay.View()
 	}
 
