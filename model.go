@@ -4,8 +4,10 @@ package main
 import (
 	"context"
 	"fmt"
+	//"os"
 	"os/exec"
 	"strings"
+	//"sync"
 	"time"
 
 	"github.com/jrcrittenden/ai-shell/llm"
@@ -13,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
+	//"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -68,42 +71,90 @@ func defaultKeymap() keymap {
 type Model struct {
 	mode    Mode
 	client  llm.Client
-	history viewport.Model
-        logBuf	strings.Builder
+	aiView  viewport.Model
+	bashView viewport.Model
+	localView viewport.Model
+	aiContent string
+	bashContent string
+	localContent string
 	input   textinput.Model
 	keys    keymap
+	program *tea.Program
 }
 
-func NewModel(c llm.Client) Model {
+func NewModel(c llm.Client) *Model {
 	in := textinput.New()
 	in.Focus()
 	in.Placeholder = ""
 	in.Prompt = "> "
 	in.CharLimit = 2048
 
-	vp := viewport.New(0, 0)
-	vp.HighPerformanceRendering = true
+	// Create separate viewports for each mode
+	aiVp := viewport.New(80, 24)
+	aiVp.Style = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#874BFD"))
 
-	return Model{
+	bashVp := viewport.New(80, 24)
+	bashVp.Style = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#87ceeb"))
+
+	localVp := viewport.New(80, 24)
+	localVp.Style = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#98fb98"))
+
+	return &Model{
 		mode:    ModeAI,
 		client:  c,
-		history: vp,
+		aiView:  aiVp,
+		bashView: bashVp,
+		localView: localVp,
+		aiContent: "",
+		bashContent: "",
+		localContent: "",
 		input:   in,
 		keys:    defaultKeymap(),
 	}
 }
 
-func (m Model) Init() tea.Cmd { return textinput.Blink }
+func (m *Model) Init() tea.Cmd {
+	// Initialize all viewports
+	cmds := []tea.Cmd{
+		textinput.Blink,
+		m.aiView.Init(),
+		m.bashView.Init(),
+		m.localView.Init(),
+	}
+	return tea.Batch(cmds...)
+}
 
 /* --------------------------------------------------------------------- */
 /*  Update                                                               */
 /* --------------------------------------------------------------------- */
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
 
+	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.history.Width, m.history.Height = msg.Width, msg.Height-2
+		// Set viewport size, leaving room for input and mode badge
+		m.aiView.Width = msg.Width
+		m.aiView.Height = msg.Height - 3 // Leave room for input, mode badge, and border
+		m.bashView.Width = msg.Width
+		m.bashView.Height = msg.Height - 3 // Leave room for input, mode badge, and border
+		m.localView.Width = msg.Width
+		m.localView.Height = msg.Height - 3 // Leave room for input, mode badge, and border
+
+		// Update all viewports
+		var cmd tea.Cmd
+		m.aiView, cmd = m.aiView.Update(msg)
+		cmds = append(cmds, cmd)
+		m.bashView, cmd = m.bashView.Update(msg)
+		cmds = append(cmds, cmd)
+		m.localView, cmd = m.localView.Update(msg)
+		cmds = append(cmds, cmd)
 
 	case tea.KeyMsg:
 		switch {
@@ -116,12 +167,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, m.keys.Run):
 			line := strings.TrimSpace(m.input.Value())
-			m.input.Reset()
 			if line == "" {
 				return m, nil
 			}
+			
+			// Store the command before clearing input
+			cmdStr := line
+			m.input.Reset()
+			
 			if m.mode == ModeBash {
-				return m, runCmd(line)
+				// Show the command being executed
+				m.appendHistory(cmdStr)
+				return m, func() tea.Msg {
+					cmd := exec.Command("bash", "-c", cmdStr)
+					out, err := cmd.CombinedOutput()
+					if err != nil {
+						return ErrMsg{Err: err}
+					}
+					return ExecOutputMsg(out)
+				}
 			}
 			return m, askAI(m.client, line)
 		}
@@ -129,7 +193,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// let textinput consume everything else
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
-		return m, cmd
+		cmds = append(cmds, cmd)
+
+	case ExecOutputMsg:
+		output := string(msg)
+		if output != "" {
+			m.appendHistory(output)
+		}
+
+	case ErrMsg:
+		red := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5555"))
+		m.appendHistory(red.Render("error: " + msg.Err.Error()))
 
 	case AIResponseMsg:
 		if msg.ToolCall != nil {
@@ -139,29 +213,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.PlainText != "" {
 			m.appendHistory(msg.PlainText)
 		}
-
-	case ExecOutputMsg:
-		m.appendHistory(string(msg))
-
-	case ErrMsg:
-		red := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5555"))
-		m.appendHistory(red.Render("error: " + msg.Err.Error()))
+		return m, nil
 	}
-	return m, nil
+
+	// Update all viewports with the message
+	var cmd tea.Cmd
+	m.aiView, cmd = m.aiView.Update(msg)
+	cmds = append(cmds, cmd)
+	m.bashView, cmd = m.bashView.Update(msg)
+	cmds = append(cmds, cmd)
+	m.localView, cmd = m.localView.Update(msg)
+	cmds = append(cmds, cmd)
+
+	return m, tea.Batch(cmds...)
 }
 
 /* --------------------------------------------------------------------- */
 /*  View                                                                 */
 /* --------------------------------------------------------------------- */
 
-func (m Model) View() string {
+func (m *Model) View() string {
 	modeBadge := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("#87ceeb")).
 		Render("[" + m.mode.String() + "]")
 
+	// Get the appropriate viewport based on mode
+	var vp viewport.Model
+	switch m.mode {
+	case ModeAI:
+		vp = m.aiView
+	case ModeBash:
+		vp = m.bashView
+	default:
+		vp = m.localView
+	}
+
 	return fmt.Sprintf("%s\n%s\n%s",
-		m.history.View(),
+		vp.View(),
 		m.input.View(),
 		modeBadge,
 	)
@@ -172,9 +261,30 @@ func (m Model) View() string {
 /* --------------------------------------------------------------------- */
 
 func (m *Model) appendHistory(s string) {
-	m.logBuf.WriteString(s)
-	m.logBuf.WriteByte('\n')
-        m.history.SetContent(m.logBuf.String())
+	// Get the appropriate viewport and content based on mode
+	var vp *viewport.Model
+	var content *string
+	switch m.mode {
+	case ModeAI:
+		vp = &m.aiView
+		content = &m.aiContent
+	case ModeBash:
+		vp = &m.bashView
+		content = &m.bashContent
+	default:
+		vp = &m.localView
+		content = &m.localContent
+	}
+
+	// Add new content
+	if *content != "" {
+		*content += "\n"
+	}
+	*content += s
+	
+	// Update viewport
+	vp.SetContent(*content)
+	vp.GotoBottom()
 }
 
 /* --------------------------------------------------------------------- */
@@ -200,15 +310,5 @@ func askAI(c llm.Client, userPrompt string) tea.Cmd {
 			}
 		}
 		return nil
-	}
-}
-
-func runCmd(cmdLine string) tea.Cmd {
-	return func() tea.Msg {
-		out, err := exec.Command("bash", "-c", cmdLine).CombinedOutput()
-		if err != nil {
-			return ErrMsg{Err: err}
-		}
-		return ExecOutputMsg(out)
 	}
 }

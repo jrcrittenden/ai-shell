@@ -34,7 +34,9 @@ func main() {
     flag.Parse()
     client := makeClient()
 
-    p := tea.NewProgram(NewModel(client))
+    m := NewModel(client)
+    p := tea.NewProgram(m)
+    m.program = p
     if _, err := p.Run(); err != nil {
         log.Fatalf("error running program: %v", err)
     }
