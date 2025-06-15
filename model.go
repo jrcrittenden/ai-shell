@@ -141,11 +141,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		// Set viewport size, leaving room for input and mode badge
 		m.aiView.Width = msg.Width
-		m.aiView.Height = msg.Height - 3 // Leave room for input, mode badge, and border
+		m.aiView.Height = msg.Height - 4 // Leave room for input, placeholder, mode badge, and border
 		m.bashView.Width = msg.Width
-		m.bashView.Height = msg.Height - 3 // Leave room for input, mode badge, and border
+		m.bashView.Height = msg.Height - 4 // Leave room for input, placeholder, mode badge, and border
 		m.localView.Width = msg.Width
-		m.localView.Height = msg.Height - 3 // Leave room for input, mode badge, and border
+		m.localView.Height = msg.Height - 4 // Leave room for input, placeholder, mode badge, and border
 
 		// Update all viewports
 		var cmd tea.Cmd
@@ -233,11 +233,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 /* --------------------------------------------------------------------- */
 
 func (m *Model) View() string {
-	modeBadge := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#87ceeb")).
-		Render("[" + m.mode.String() + "]")
-
 	// Get the appropriate viewport based on mode
 	var vp viewport.Model
 	switch m.mode {
@@ -249,10 +244,25 @@ func (m *Model) View() string {
 		vp = m.localView
 	}
 
-	return fmt.Sprintf("%s\n%s\n%s",
+	// Create the mode badge with right alignment
+	modeBadge := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#87ceeb")).
+		Align(lipgloss.Right).
+		Width(vp.Width).
+		Render("[" + m.mode.String() + "]")
+
+	// Create a placeholder line
+	placeholder := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#666666")).
+		Render("[placeholder]")
+
+	// Combine everything with proper spacing
+	return fmt.Sprintf("%s\n%s\n%s\n%s",
+		modeBadge,
 		vp.View(),
 		m.input.View(),
-		modeBadge,
+		placeholder,
 	)
 }
 

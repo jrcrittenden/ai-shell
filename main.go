@@ -12,7 +12,7 @@ import (
 )
 
 var (
-    backend = flag.String("backend", "openai", "openai | localop")
+    backend = flag.String("backend", "openai", "openai | localop | mock")
     model   = flag.String("model", "gpt-4o", "model or agent name")
     url     = flag.String("url", "", "override base URL")
     apiKey     = flag.String("key", os.Getenv("OPENAI_API_KEY"), "OpenAI key (if needed)")
@@ -25,6 +25,8 @@ func makeClient() llm.Client {
             *url = "http://localhost:8080/chat"
         }
         return llm.NewLocalOperator(*url, *model)
+    case "mock":
+        return llm.NewMockOpenAI()
     default:
         return llm.NewOpenAI(*apiKey, *url, *model)
     }
