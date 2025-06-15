@@ -6,13 +6,13 @@ import (
 	"fmt"
 	//"time"
 
-	"github.com/jrcrittenden/ai-shell/internal/tui"
-	"github.com/jrcrittenden/ai-shell/llm"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jrcrittenden/ai-shell/internal/tui"
+	"github.com/jrcrittenden/ai-shell/llm"
 	"github.com/rmhubbert/bubbletea-overlay"
 )
 
@@ -83,21 +83,21 @@ func defaultKeymap() keymap {
 
 // Model represents the application state
 type Model struct {
-	client     llm.Client
-	input      textinput.Model
-	output     viewport.Model
-	history    []llm.Message
-	showDialog bool
-	dialog     *tui.DialogModel
-	width      int
-	height     int
-	mode       Mode
-	keys       keymap
-	aiContent  string
-	bashOutput string
-	chunkChan  chan llm.Chunk
-	overlay    *overlay.Model
-	baseModel  BaseModel
+	client      llm.Client
+	input       textinput.Model
+	output      viewport.Model
+	history     []llm.Message
+	showDialog  bool
+	dialog      *tui.DialogModel
+	width       int
+	height      int
+	mode        Mode
+	keys        keymap
+	aiContent   string
+	bashOutput  string
+	chunkChan   chan llm.Chunk
+	overlay     *overlay.Model
+	baseModel   BaseModel
 	dialogModel DialogModel
 }
 
@@ -180,7 +180,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					updatedDialog, cmd := dialogModel.Update(msg)
 					m.dialogModel = updatedDialog.(DialogModel)
 					cmds = append(cmds, cmd)
-					
+
 					// Recreate overlay with updated dialog
 					m.overlay = overlay.New(&m.dialogModel, &m.baseModel, overlay.Center, overlay.Center, 0, 0)
 				}
@@ -299,12 +299,14 @@ func (m BaseModel) View() string {
 		Render(m.content)
 }
 
-// DialogModel represents the dialog view
+// DialogModel represents the approval dialog shown over the
+// normal shell interface. It is kept deliberately simple so that
+// it can be reused as the foreground model in an overlay.
 type DialogModel struct {
-	content    string
-	width      int
-	height     int
-	selected   int // 0: none, 1: approve, 2: deny
+	content  string
+	width    int
+	height   int
+	selected int // 0: none, 1: approve, 2: deny
 }
 
 func (m DialogModel) Init() tea.Cmd {
@@ -395,27 +397,31 @@ func (m Model) View() string {
 	)
 
 	if m.showDialog && m.dialog != nil {
-		// Create dialog content
-		dialogContent := fmt.Sprintf("Command: %s\n\nReason: %s",
-			m.dialog.Command,
-			m.dialog.Reason,
-		)
+		// Create dialog content on first display. Reuse existing models
+		// so that any state updates (e.g. selected button) persist
+		if m.overlay == nil {
+			dialogContent := fmt.Sprintf("Command: %s\n\nReason: %s",
+				m.dialog.Command,
+				m.dialog.Reason,
+			)
 
-		// Create models for overlay
-		m.baseModel = BaseModel{
-			content: baseView,
-			width:   m.width,
-			height:  m.height,
-		}
-		m.dialogModel = DialogModel{
-			content:  dialogContent,
-			width:    m.width / 2,    // Half the terminal width
-			height:   m.height / 3,   // One third of the terminal height
-			selected: 1,              // Start with approve selected
+			m.baseModel = BaseModel{
+				content: baseView,
+				width:   m.width,
+				height:  m.height,
+			}
+			m.dialogModel = DialogModel{
+				content:  dialogContent,
+				width:    m.width / 2,  // Half the terminal width
+				height:   m.height / 3, // One third of the terminal height
+				selected: 1,            // Start with approve selected
+			}
+
+			m.overlay = overlay.New(&m.dialogModel, &m.baseModel, overlay.Center, overlay.Center, 0, 0)
 		}
 
-		// Create a new overlay with the dialog
-		m.overlay = overlay.New(&m.dialogModel, &m.baseModel, overlay.Center, overlay.Center, 0, 0)
+		// Keep the base model in sync with the current UI
+		m.baseModel.content = baseView
 		return m.overlay.View()
 	}
 
