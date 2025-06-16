@@ -7,11 +7,14 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
+// openAI implements Client using the OpenAI-compatible API.
 type openAI struct {
 	c     *openai.Client
 	model string
 }
 
+// NewOpenAI returns a Client that connects to an OpenAI-compatible endpoint.
+// baseURL may be left empty for the default OpenAI URL.
 func NewOpenAI(apiKey, baseURL, model string) Client {
 	cfg := openai.DefaultConfig(apiKey)
 	if baseURL != "" {
