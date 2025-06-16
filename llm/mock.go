@@ -6,16 +6,21 @@ import (
 	"strings"
 )
 
+// mockOpenAI implements Client and returns deterministic responses for tests.
 type mockOpenAI struct {
 	firstInteraction bool
 }
 
+// NewMockOpenAI creates a new in-memory client that emulates an OpenAI chat
+// endpoint. It is primarily intended for testing.
 func NewMockOpenAI() Client {
 	return &mockOpenAI{
 		firstInteraction: true,
 	}
 }
 
+// Stream sends a response for the supplied chat history. It interprets a small
+// set of text commands and may emit ToolCall chunks.
 func (m *mockOpenAI) Stream(ctx context.Context, hist []Message) <-chan Chunk {
 	out := make(chan Chunk, 8)
 
@@ -45,14 +50,14 @@ func (m *mockOpenAI) Stream(ctx context.Context, hist []Message) <-chan Chunk {
 			out <- Chunk{Text: "Hello!\n"}
 		case "cmd", "command":
 			out <- Chunk{Text: "[DEBUG] Command matched: cmd/command\n"}
-			
+
 			// Create and send the tool call
 			toolCall := &ToolCall{
 				Command: "ls -alh",
 				Reason:  "Listing directory contents",
 			}
 			out <- Chunk{Text: fmt.Sprintf("[DEBUG] Tool call: %s (%s)\n", toolCall.Command, toolCall.Reason)}
-			
+
 			// Send the tool call in a separate chunk
 			toolCallChunk := Chunk{ToolCall: toolCall}
 			out <- toolCallChunk
@@ -64,4 +69,4 @@ func (m *mockOpenAI) Stream(ctx context.Context, hist []Message) <-chan Chunk {
 	}()
 
 	return out
-} 
+}
