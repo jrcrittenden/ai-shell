@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	backend = flag.String("backend", "openai", "Backend to use (openai, localop, mock)")
+	backend = flag.String("backend", "openai", "Backend to use (openai, localop, codex, claude, mock)")
 	apiKey  = flag.String("api-key", "", "OpenAI API key")
 	url     = flag.String("url", "", "URL for local operator")
 	model   = flag.String("model", "gpt-4", "Model to use")
@@ -19,11 +19,11 @@ var (
 func main() {
 	flag.Parse()
 
-	// Create the client
-	client := makeClient()
+	// Create the clients for runtime switching
+	clients := makeClients()
 
-	// Create the model
-	m := NewModel(client)
+	// Create the model with the requested backend active
+	m := NewModel(clients, *backend)
 
 	// Create the program
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -35,16 +35,20 @@ func main() {
 	}
 }
 
-func makeClient() llm.Client {
-	switch *backend {
-	case "localop":
-		if *url == "" {
-			*url = "http://localhost:8080/chat"
-		}
-		return llm.NewLocalOperator(*url, *model)
-	case "mock":
-		return llm.NewMockOpenAI()
-	default:
-		return llm.NewOpenAI(*apiKey, *url, *model)
+func makeClients() map[string]llm.Client {
+	clients := map[string]llm.Client{
+		"openai":  llm.NewOpenAI(*apiKey, *url, *model),
+		"localop": llm.NewLocalOperator(defaultURL(), *model),
+		"codex":   llm.NewCodexCLI("codex"),
+		"claude":  llm.NewClaudeCode("claude"),
+		"mock":    llm.NewMockOpenAI(),
 	}
+	return clients
+}
+
+func defaultURL() string {
+	if *url == "" {
+		return "http://localhost:8080/chat"
+	}
+	return *url
 }
