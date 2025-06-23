@@ -1,11 +1,14 @@
 # AI Shell Scaffold
 
 Tiny Bubble Tea TUI that lets you flip between a normal bash prompt **and** an AI prompt.
-The AI can suggest commands, which you can approve or reject.  
+The AI can suggest commands, which you can approve or reject.
+Switch between LLM backends at runtime using the navigation keys.
 Back‑end is swappable:
 
-* **OpenAI‑compatible** (`--backend openai`) – api.openai.com, LocalAI, vLLM, Groq…  
+* **OpenAI‑compatible** (`--backend openai`) – api.openai.com, LocalAI, vLLM, Groq…
 * **Local Operator** (`--backend localop`) – any running `local-operator serve` instance.
+* **Codex CLI** (`--backend codex`) – invokes the `codex` command via stdio.
+* **Claude Code** (`--backend claude`) – invokes the `claude` command via stdio.
 
 ## Quick start
 
@@ -13,6 +16,14 @@ Back‑end is swappable:
 git clone https://github.com/you/ai-shell.git
 cd ai-shell
 go run . --backend openai --model gpt-4o
+```
+
+or to use Codex or Claude CLI (requires the binaries on PATH)
+
+```bash
+go run . --backend codex --model default
+# or
+go run . --backend claude --model default
 ```
 
 or
@@ -29,6 +40,10 @@ Keybinds:
 | `Ctrl+T`     | Toggle AI ↔ Bash    |
 | `Enter`      | Send prompt / run   |
 | `Ctrl+C` `q` | Quit                |
+| `F1`         | Use OpenAI backend  |
+| `F2`         | Use LocalOp backend |
+| `F3`         | Use Codex backend   |
+| `F4`         | Use Claude backend  |
 
 ## Files
 

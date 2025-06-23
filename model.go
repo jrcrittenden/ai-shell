@@ -65,16 +65,24 @@ type (
 /* --------------------------------------------------------------------- */
 
 type keymap struct {
-	Toggle key.Binding
-	Run    key.Binding
-	Quit   key.Binding
+	Toggle  key.Binding
+	Run     key.Binding
+	Quit    key.Binding
+	OpenAI  key.Binding
+	LocalOp key.Binding
+	Codex   key.Binding
+	Claude  key.Binding
 }
 
 func defaultKeymap() keymap {
 	return keymap{
-		Toggle: key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "switch AI↔bash")),
-		Run:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send/exec")),
-		Quit:   key.NewBinding(key.WithKeys("ctrl+c", "q"), key.WithHelp("q", "quit")),
+		Toggle:  key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "switch AI↔bash")),
+		Run:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send/exec")),
+		Quit:    key.NewBinding(key.WithKeys("ctrl+c", "q"), key.WithHelp("q", "quit")),
+		OpenAI:  key.NewBinding(key.WithKeys("f1"), key.WithHelp("F1", "openai")),
+		LocalOp: key.NewBinding(key.WithKeys("f2"), key.WithHelp("F2", "localop")),
+		Codex:   key.NewBinding(key.WithKeys("f3"), key.WithHelp("F3", "codex")),
+		Claude:  key.NewBinding(key.WithKeys("f4"), key.WithHelp("F4", "claude")),
 	}
 }
 
@@ -84,6 +92,8 @@ func defaultKeymap() keymap {
 
 // Model represents the application state
 type Model struct {
+	clients            map[string]llm.Client
+	backend            string
 	client             llm.Client
 	input              textinput.Model
 	output             viewport.Model
@@ -137,8 +147,9 @@ func (m *Model) startStream() tea.Cmd {
 	return streamChunks(m.chunkChan)
 }
 
-// NewModel creates a new model
-func NewModel(c llm.Client) Model {
+// NewModel initializes the TUI state with a map of LLM clients and the
+// backend that should be active when the program starts.
+func NewModel(clients map[string]llm.Client, backend string) Model {
 	// Create input
 	in := textinput.New()
 	in.Placeholder = "Type a message..."
@@ -156,7 +167,9 @@ func NewModel(c llm.Client) Model {
 
 	// Create base model
 	m := Model{
-		client:             c,
+		clients:            clients,
+		backend:            backend,
+		client:             clients[backend],
 		input:              in,
 		output:             vp,
 		history:            []llm.Message{},
@@ -269,6 +282,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// TODO: Implement command execution
 				m.appendToOutput("$ " + m.input.Value())
 			}
+		case "f1":
+			m.backend = "openai"
+			m.client = m.clients[m.backend]
+			m.appendToOutput("[switched to OpenAI]")
+		case "f2":
+			m.backend = "localop"
+			m.client = m.clients[m.backend]
+			m.appendToOutput("[switched to LocalOp]")
+		case "f3":
+			m.backend = "codex"
+			m.client = m.clients[m.backend]
+			m.appendToOutput("[switched to Codex]")
+		case "f4":
+			m.backend = "claude"
+			m.client = m.clients[m.backend]
+			m.appendToOutput("[switched to Claude]")
 		case "esc":
 			if m.mode == ModeBash {
 				m.mode = ModeAI
@@ -425,12 +454,22 @@ func (m Model) View() string {
 		Foreground(lipgloss.Color("#87ceeb")).
 		Padding(0, 1)
 
+	// Navigation bar with backend choices
+	nav := fmt.Sprintf("F1 OpenAI | F2 LocalOp | F3 Codex | F4 Claude   [current: %s]", m.backend)
+
 	// Base view with input and output
-	baseView := fmt.Sprintf("%s\n%s\n%s",
+	base := fmt.Sprintf("%s\n%s\n%s",
 		modeStyle.Render(fmt.Sprintf("[%s]", m.mode)),
 		m.output.View(),
 		m.input.View(),
 	)
+
+	footer := fmt.Sprintf("%s %s | %s %s | %s %s",
+		m.keys.Toggle.Help().Key, m.keys.Toggle.Help().Desc,
+		m.keys.Run.Help().Key, m.keys.Run.Help().Desc,
+		m.keys.Quit.Help().Key, m.keys.Quit.Help().Desc)
+
+	baseView := fmt.Sprintf("%s\n%s\n%s", nav, base, footer)
 
 	if m.showDialog && m.dialog != nil {
 		// Lazily create and then reuse the overlay so that the
